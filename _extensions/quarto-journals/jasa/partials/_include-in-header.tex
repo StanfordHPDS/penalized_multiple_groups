@@ -1,0 +1,23 @@
+\addtolength{\oddsidemargin}{-.5in}%
+\addtolength{\evensidemargin}{-1in}%
+\addtolength{\textwidth}{1in}%
+\addtolength{\textheight}{1.7in}%
+\addtolength{\topmargin}{-1in}%
+
+
+\usepackage{siunitx}
+\usepackage{amsmath}
+\usepackage{array, makecell}
+
+\renewcommand\cellset{\renewcommand\arraystretch{0.5}%
+\setlength\extrarowheight{0pt}}
+
+\makeatletter
+\def\@seccntformat#1{\@ifundefined{#1@cntformat}%
+   {\csname the#1\endcsname\space}%    default
+   {\csname #1@cntformat\endcsname}}%  enable individual control
+\newcommand\section@cntformat{\thesection.\space} % section-level
+\makeatother
+
+\renewcommand\thesubsection{\thesection.\arabic{subsection}}
+\renewcommand\thesubsubsection{\thesection.\arabic{subsection}.\arabic{subsubsection}}

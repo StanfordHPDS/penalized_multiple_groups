@@ -1,0 +1,359 @@
+---
+title: Supplementary Material for Penalized Fair Regression for Multiple Groups in Chronic Kidney Disease by Carter Nakamoto, Lucia Chen, Agata Foryciarz, and Sherri Rose
+execute:
+  echo: false
+format:
+  jasa-pdf:
+    include-in-header:
+      text: |
+        \usepackage{longtable}
+    keep-tex: true   
+    journal:
+      blinded: false
+  html:
+    code-fold: true
+bibliography: fairpenalties.bib
+jupyter: python3
+crossref:
+  fig-title: Web Figure     # (default is "Figure")
+  tbl-title: Web Table     # (default is "Table")
+---
+
+
+```{python}
+#| echo: false
+# bring in relevant libraries
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+import warnings
+from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.metrics import r2_score
+from scipy.optimize import minimize
+from scipy.stats import norm
+warnings.filterwarnings('ignore')
+import matplotlib.pyplot as plt
+from IPython.display import Markdown
+from tabulate import tabulate
+import sys
+from great_tables import GT, md, html
+import seaborn as sns
+import os
+sys.path.append("code")
+from simpop import *
+```
+
+## Web Appendix A: Continuous Outcomes {.unnumbered}
+
+Here we seek to estimate continuous outcome $Y$. The baseline continuous outcome regression generates estimates $\hat Y$ as a function of $m$ input variables $X$, indexed by $q$, by identifying the estimator that minimizes the mean squared error (MSE) loss. The unfairness metric is mean residual disparity, defined as the difference in mean residuals between the reference group and the group of interest: 
+$$
+U_{MR} = \frac{1}{n_r} \sum_{k \in r} (\hat Y_k - Y_k) - \frac{1}{n_g} \sum_{j\in g} (\hat Y_j - Y_j).
+$$ {#eq-fair-yhat-up}
+
+Penalized regression with continuous outcomes will add penalties for unfairness as defined in @eq-fair-yhat-up, where each group has its own penalty term and penalty weight. 
+
+### Example: Lasso {.unnumbered}
+
+We first use the example of lasso, which involves adding a penalty on regression coefficients $\beta$ with penalty weight $\gamma$ to the mean squared error loss and estimating $\hat Y$ as a linear combination of regression coefficients and predictors: 
+$$
+L = \sum_{i=1}^n \left[ \sum_{q=1}^m \beta_q X_{iq} - Y_i \right]^2 + \gamma \sum_{q=1}^m |\beta_q|.
+$$ 
+
+The loss function with fairness penalties is given by:
+$$
+L = \sum_{i=1}^n \left[ \sum_{q=1}^m \beta_q X_{iq} - Y_i \right]^2 + \gamma \sum_{q=1}^m |\beta_q| + \sum_{g \in G} \lambda_g \left[\frac{1}{n_r} \sum_{k \in r} (\hat Y_k - Y_k) - \frac{1}{n_g} \sum_{j\in g} (\hat Y_j - Y_j) \right].
+$$ 
+
+This loss function minimization problem can be solved using the L-BFGS algorithm, a type of quasi-Newtonian optimizer [@liu_limited_1989], available in the `PyTorch` package.
+
+### Example: Neural Net {.unnumbered}
+
+A penalized loss function for a simple neural network with two hidden layers could be defined as:
+
+$$
+L = \sum_{i=1}^n \left[ \sum_{q=1}^m \beta_q X_{iq} - Y_i \right]^2 + \sum_{g \in G} \lambda_g \left[\frac{1}{n_r} \sum_{k \in r} (\hat Y_k - Y_k) - \frac{1}{n_g} \sum_{j\in g} (\hat Y_j - Y_j) \right].
+$$ {#eq-pen-loss-cont}
+
+The loss function minimization problem here can be solved using the Adam algorithm, a type of gradient descent-based optimizer [@loshchilov_decoupled_2019], also available in the `PyTorch` package. 
+
+## Web Appendix B: Weighted Classification Derivation {.unnumbered}
+
+We begin with the loss function from section 3.1 of the manuscript. 
+$$
+L = - \sum_{i=1}^n \{ Y_i\ln(\hat P_i) + (1-Y_i)\ln(1 - \hat P_i) \} + \sum_{g \in G} \lambda_g n_g \left(\frac{\sum_{k\in r}Y_k\hat P_k}{\sum_{k\in r}Y_k} - \frac{\sum_{j\in g}Y_j\hat P_j}{\sum_{j\in g}Y_j} \right). 
+$$ 
+We could calculate the gradient and use a gradient descent-based algorithm to find the solution. With $\nabla \hat P = \hat P(1-\hat P)X$, the gradient is
+$$
+\nabla L = - \sum_{i=1}^n \left(Y_i - \hat P_i \right)X_i + \sum_{g \in G} \lambda_g n_g \left(\frac{\sum_{k\in r} \nabla \hat P_k}{\sum_{k\in r}Y_k} - \frac{\sum_{j\in g}Y_j \nabla \hat P_j}{\sum_{j\in g}Y_j} \right) .
+$$
+
+However, there is a more efficient method available based on the reductions approach of @agarwal_reductions_2018. In this approach, we use cost minimization loss, which punishes misalignment between $\hat P_i$ and $Y_i$ with a cost and minimizes total costs [@zadrozny_cost-sensitive_2003]. The cost-sensitive loss function with the standard erroneous classification costs of 1 for all observations, which has the same solution as the standard binary cross entropy loss, can be added to the true positive rate disparity unfairness penalty terms to get the cost minimization penalized loss function:
+$$
+L = \sum_{i=1}^n \left\{\hat P_i (1 - Y_i) + (1 - \hat P_i) Y_i \right\} + \sum_{g \in G} \lambda_g n_g \left(\frac{\sum_{k\in r}Y_k\hat P_k}{\sum_{k\in r}Y_k} - \frac{\sum_{j\in g}Y_j\hat P_j}{\sum_{j\in g}Y_j} \right) .
+$$
+This penalized loss function is, itself, a cost-sensitive classification loss function with more complex costs. This is apparent when the function is rewritten: 
+$$
+L = \sum_{i=1}^n \left[\hat P_i \left\{1 - Y_i + Y_i \sum_{g \in G}\lambda_g n_g \left( \frac{\mathbb{I}_{ri}}{\sum_{k\in r}Y_k } - \frac{\mathbb{I}_{gi}}{\sum_{j\in g}Y_j} \right) \right\} + (1 - \hat P_i) Y_i   \right]. 
+$$
+
+Reconceptualizing of the penalized fair regression as a cost-sensitive classification problem, the costs for positive ($C_i^1$) and negative ($C_i^0$) classifications are
+$$ C_i^1 = 1 - Y_i + Y_i \sum_{g \in G}\lambda_g n_g \left( \frac{\mathbb{I}_{ri}}{\sum_{k\in r}Y_k } - \frac{\mathbb{I}_{gi}}{\sum_{j\in g}Y_j} \right), $$
+and $C_i^0 = Y_i$. These costs differ from the standard cost of 1 for all incorrect classifications and 0 for all correct classifications. For reference group individuals, even correct positive classifications incur some cost, and for individuals in the groups $g \in G$, correct positive classifications will incur negative costs, which could also be called rewards. 
+
+With this formulation, we extend a theorem from @zadrozny_cost-sensitive_2003 to rewrite the cost-sensitive classification problem as a weighted non-cost-sensitive classification problem. In this formulation, the weights are
+$$
+W_i = |C_i^0 - C_i^1| = \left|Y_i\left \{ 2 - \sum_{g \in G}\lambda_g n_g \left( \frac{\mathbb{I}_{ri}}{\sum_{k\in r}Y_k } - \frac{\mathbb{I}_{gi}}{\sum_{j\in g}Y_j}  \right) \right\} - 1\right|,
+$$ 
+and modified outcomes are $Y_i' = \mathbb{I}(C_i^0 > C_i^1)$. It is then possible to perform the desired fair penalized regression with a wide array of standard classifiers (e.g., logistic regression, support vector machines, decision trees) that are compatible with individual-level sample weighting. 
+
+## Web Appendix C: Simulation Study  {.unnumbered}
+
+Let $g_A$, $g_B$, and $g_C$ be the three different groups whose membership was reflected by indicators $\mathbb{I}_{g_A}$, $\mathbb{I}_{g_B}$, and $\mathbb{I}_{g_C}$, respectively. We defined the reference group to be the set of individuals who were not in any of the three groups. The data were generated as follows with $n = 1,000,000$:
+$$X_1, X_2 \sim \mathcal{N} (30, 15)$$
+$$X_3, X_4 \sim Pois (15)$$
+$$X_5, \dots, X_9 \sim Bern(p), p = [0.2, 0.4, 0.6, 0.8, 0.95]$$
+$$\mathbb{I}_{g_A} \sim Bern(\min[\max\{c_0 (X_9 + 0.1) + c_3 X_6 + \mathcal{N} (0, 0.02), 0\}, 1])$$
+$$\mathbb{I}_{g_B} \sim Bern(\min[\max\{c_1 (X_7 + 0.05) + c_4 X_6 + \mathcal{N} (0, 0.02), 0\}, 1])$$
+$$\mathbb{I}_{g_C} \sim Bern(\min[\max\{c_2 (X_8 + 0.4) + c_5 X_6 + \mathcal{N} (0, 0.02), 0\}, 1])$$
+$$ \begin{aligned} Y &\sim Bern\Bigg(\Phi^{-1}\bigg[\frac{X_1}{30}  - \frac{ X_2}{15} + \frac{3 X_3}{50} - \frac{ X_4}{25} + \frac{1}{100}\Big\{2^{X_5 + X_6} + 6 X_7 \\ & + 10 X_8 X_9 + 8 X_3 A + 6 X_4 B + C \mathcal{N} (60, 2)\Big \} + \mathcal{N} (0, 1)\bigg ]\Bigg). \end{aligned} $$
+
+Across three simulation settings, $c=c_0, \dots, c_5$ vary. Simulation setting 1 has all moderately sized groups with $c = (0.2,0.2,0.2,0.02,0.02,0.02)$, $g_A$ is small in simulation setting 2 with $c = (0.02,0.2,0.2,0.002,0.02,0.02)$, and all groups are small in simulation setting 3 with $c = (0.02,0.02,0.02,0.002,0.002,0.002)$. There is substantial overlap between the groups $g_A$, $g_B$, and $g_C$ in all settings. 
+
+```{python}
+#| echo: false
+fairnesses = ['mean_unfairness','mean_unfairness_unwt','max_unfairness','A_unfairness','B_unfairness','C_unfairness']
+
+penres_list = []
+for i in range(10):
+  file_path = f'tables/penalty_res_{i}.csv'
+  if os.path.exists(file_path):
+      penres_list += [pd.read_csv(file_path)]
+resultstab = pd.concat(penres_list)
+
+## displayprefs
+docoptim = 'word'
+if docoptim == 'word':
+  threewidth = 4
+  threeheight = threewidth * 1.2
+  twowidth = 5
+  twoheight = twowidth
+else:
+  threewidth = 3
+  threeheight = threewidth * 1.3
+  twowidth = 4
+  twoheight = twowidth * 1.1
+unfairdims = [-.01, .16]
+```
+
+```{python}
+#| echo: false
+
+resultstab = resultstab.drop_duplicates()
+resultstab_al0 = pd.read_csv('tables/penalty_res_al0.csv')
+resultstab = pd.concat([resultstab, resultstab_al0]).sort_values(by = ['alpha', 'k_set', 'misspec']).reset_index(drop = True)
+fairnesses = ['mean_unfairness','mean_unfairness_unwt','max_unfairness','A_unfairness','B_unfairness','C_unfairness']
+resultstab[fairnesses] = -resultstab[fairnesses]
+resultstab1 = resultstab[resultstab['misspec']==0]
+# calculate population weighted averages
+# summarize across misspecification
+keepcols = ['alpha','k_set','l1','l2','l3','accuracy','mean_unfairness','mean_unfairness_unwt','max_unfairness','A_unfairness','B_unfairness','C_unfairness']
+resultstab1 = resultstab1.fillna(0)[(resultstab1['n_iter'] == 40) | (resultstab1['n_iter'].isnull())]
+sumtab = resultstab1[keepcols].groupby(['alpha','k_set']).mean().reset_index()
+desc = ['Medium Groups', 'One Small Group', 'All Small Groups']
+sumtabq1 = resultstab1[keepcols].groupby(['alpha','k_set']).quantile(.25).reset_index()
+sumtabq2 = resultstab1[keepcols].groupby(['alpha','k_set']).quantile(.5).reset_index()
+sumtabq3 = resultstab1[keepcols].groupby(['alpha','k_set']).quantile(.75).reset_index()
+
+tab2 = sumtab[['alpha','k_set','l1','l2','l3']]
+tab2['alpha'] = ['Fairness Weight: ' + str(a) for a in tab2['alpha']]
+tab2['k_set'] = ['Sim Pop ' + str(a + 1) for a in tab2['k_set']]
+
+draws_list = []
+for i in range(50):
+  file_path = f'tables/drawcounts_{i+1}.csv'
+  if os.path.exists(file_path):
+      draws_list += [pd.read_csv(file_path, index_col = 0)]
+drawcounts = pd.concat(draws_list)
+drawcounts[fairnesses] = -drawcounts[fairnesses]
+
+comps_list = []
+for i in range(11):
+  file_path = f'tables/comp_res_{i+1}.csv'
+  if os.path.exists(file_path):
+      comps_list += [pd.read_csv(file_path, index_col = 0)]
+comps = pd.concat(comps_list)
+fairnesses.remove('mean_unfairness_unwt')
+comps[fairnesses] = -comps[fairnesses]
+```
+
+```{python}
+#| echo: false
+
+resultstab3 = resultstab.copy()
+
+temp = resultstab3[resultstab3['misspec']==0]
+temp['method'] = 'Novel Penalized'
+comps['method'] = 'Fair Reductions'
+temp = temp[comps.columns.tolist()]
+revtab = pd.concat((temp, comps))
+revtab['k_set'] = [f'Sim. Set. {k+1}' for k in revtab['k_set']]
+revtab.rename(columns={'k_set': 'Simulation Setting', 'method': 'Method'}, inplace=True)
+```
+
+```{python}
+#| echo: false
+
+keepcols = ['alpha','k_set','l1','l2','l3','accuracy','mean_unfairness','mean_unfairness_unwt','max_unfairness','A_unfairness','B_unfairness','C_unfairness','n_iter']
+drawcounts = drawcounts[(drawcounts['misspec']==0) & (drawcounts['n_iter'] > 0)]
+drawcounts = drawcounts.fillna(0)
+sumtab = drawcounts[keepcols].groupby(['n_iter','k_set']).mean().reset_index()
+desc = ['Medium Groups', 'One Small Group', 'All Small Groups']
+sumtabq1 = drawcounts[keepcols].groupby(['n_iter','k_set']).quantile(.25).reset_index()
+sumtabq2 = drawcounts[keepcols].groupby(['n_iter','k_set']).quantile(.5).reset_index()
+sumtabq3 = drawcounts[keepcols].groupby(['n_iter','k_set']).quantile(.75).reset_index()
+```
+
+
+```{python}
+#| echo: false
+tab1 = pd.read_csv('tables/tab1_baseline.csv', index_col = 0)
+tab1 = tab1[1:]
+tab1.columns = ['nan', 'Missing', 'Overall', 'No ESRD', 'ESRD']
+
+# reformat table for cleanness
+tab1 = tab1[tab1.iloc[:,0] != False]
+tab1 = tab1.drop(tab1.columns[0], axis=1)
+for badrow in ['max_systolic, mean (SD)','max_diastolic, mean (SD)']:
+  if badrow in tab1.index:
+    tab1 = tab1.drop(badrow)
+tab1 = tab1.iloc[[0,8,1,2,3,4,5,6,15,16,17,18,7,9,10,11,12,13]]
+tab1 = tab1.fillna(0)
+
+tab1.index = ['n','Minimum eGFR, mean (SD)','Mean Diastolic BP, mean (SD)',
+       'Mean Systolic BP, mean (SD)', 'Max HbA1c, mean (SD)',
+       'Mean HbA1c, mean (SD)', 'Max Bilirubin, mean (SD)', 'Mean Bilirubin, mean (SD)', 'Diabetes (Type 2), n (\%)', 'Kidney Stone, n (\%)',
+       'Proteinuria, n (\%)', 'Pyelonephritis, n (\%)', 
+       'Age, mean (SD)', 'Female, n (\%)', 
+       'White, n (\%)', 'Black, n (\%)', 'Asian, n (\%)', 'Hispanic non-white, n (\%)']
+
+tab1['section'] = [''] + ['Measurements'] * 7 + ['Diagnoses'] * 4 + ['Demographics'] * 6
+tab1 = tab1.drop(['Max HbA1c, mean (SD)','Max Bilirubin, mean (SD)'])
+tab1 = tab1.reset_index()
+```
+
+{{< pagebreak >}}
+
+
+| Diagnosis | Search Method | Query |
+|-----------|:-----------|:-------------------|
+| ESRD      | Text Query   | "End stage renal disease" or "End stage renal failure" |
+| eGFR     | Preexisting  | See [repository](https://github.com/StanfordHPDS/data_transformation/tree/main/egfr_microsim/cohort/sql_scripts) |
+| HbA1c       | OMOP Concepts: Measurement | 4184637, 36304734 |
+| Bilirubin       | OMOP Concepts: Measurement | 4118986, 3024148, 4216632, 3024128 |
+| Diastolic BP       | OMOP Concepts: Measurement | 4298393, 3012888 |
+| Systolic BP       | OMOP Concepts: Measurement | 4152194, 3004249 |
+| CKD       | OMOP Concepts: Condition | 44784621, 443611, 443601, 44782690, 43021852, 45768812, 44782728, 45763855, 45763854, 43531578, 45768812, 443612, 44782429, 43531653, 443614, 43021852, 443597 |
+| Diabetes (Type 2)       | OMOP Concepts: Condition / ICD10 | 44809548, 37208172 / E11 |
+| Kidney Stone       | OMOP Concepts: Condition | 201620, 45548655, 44822046 |
+| Obstruction       | OMOP Concepts: Condition | 45612141, 45592125, 45567838, 36713449, 4220439, 433813 |
+| Hypertension Emergency       | OMOP Concepts: Condition | 43020424, 45768449, 37200492, 37200493, 37200494 |
+| Proteinuria       | Text Query    | "Proteinuria" |
+| Glomerulonephritis       | Text Query    | "Glomerulonephritis" |
+| Pyelonephritis       | Text Query    | "Pyelonephritis" |
+| Female  | OMOP Concepts: Gender | 8532 |
+| White  | OMOP Concepts: Race | 8527, 38003614 |
+| Black  | OMOP Concepts: Race | 8516, 38003597, 38003598, 38003599, 38003600 |
+| Asian  | OMOP Concepts: Race | 8515, 38003574-38003596 |
+| Hispanic  | OMOP Concepts: Ethnicity | 38003563 |
+: \textbf{Identification Strategy for ABFM Variables.} For most variables, we queried for the enumerated OMOP concepts in the enumerated fields. For other variables, we queried the OMOP concept lookup table for the OMOP ABFM data with the given text. 
+
+```{python}
+#| echo: false
+#| label: tbl-tab1
+#| tbl-cap: \textbf{Cohort Patient Characteristics in 2017-2018 by ESRD Status in 2019.}
+#| output: asis
+
+tab1 = tab1.drop('section', axis = 1)
+tab1.loc[0.5] = 'Measurements','','','',''
+tab1.loc[5.5] = 'Diagnoses','','','',''
+tab1.loc[9.5] = 'Demographics','','','',''
+tab1 = tab1.sort_index()
+tab1 = tab1.rename(columns={'index': ''})
+print(tab1.to_latex(index = False, float_format="%.2f"))
+```
+
+
+{{< pagebreak >}}
+
+
+```{python}
+#| echo: false
+#| label: fig-6
+#| fig-cap: \textbf{Fair Regression Estimator Accuracy and Unfairness by Number of Candidate Unfairness Penalty Weight Draws Across Different Simulation Settings.} Confidence intervals represent the empirical 25th and 75th percentiles of replications.
+#| fig-subcap:
+#|   - Accuracy
+#|   - Population-Weighted Unfairness
+#| layout: [[47,-6,47]]
+colors = ['blue','green','darkorange']
+for i, outcome in enumerate(['accuracy','mean_unfairness']):
+  fig = plt.figure(figsize=(twowidth, twoheight))
+  for k in range(3):
+    plt.errorbar(sumtabq2[sumtabq2['k_set'] == k]['n_iter'], sumtabq2[sumtabq2['k_set'] == k][outcome], yerr = [sumtabq2[sumtabq2['k_set'] == k][outcome] - sumtabq1[sumtabq1['k_set'] == k][outcome], sumtabq3[sumtabq3['k_set'] == k][outcome] - sumtabq2[sumtabq2['k_set'] == k][outcome]], alpha=0.4, label = f"Simulation Setting {k+1}", color = colors[k], fmt='.', capsize=5)
+  if outcome == 'accuracy':
+    plt.axhline(y=1, color='grey', linestyle='dashed')
+    plt.ylim(0, 1.05)
+    plt.ylabel('Accuracy')
+    leg = plt.legend(loc='lower right')
+    for lh in leg.legend_handles: 
+      lh.set_alpha(1)
+  else: 
+    plt.axhline(y=0, color='grey', linestyle='dashed')
+    plt.ylim(unfairdims[0],unfairdims[1])  
+    plt.ylabel('Mean Unfairness')
+  plt.xlabel('Number of Candidate Penalty Weight Sets')
+  plt.show()
+```
+
+```{python}
+#| echo: false
+
+resultstab2 = resultstab.copy()
+
+# renaming for legend
+resultstab2['k_set'] = [f'Population {k+1}' for k in resultstab2['k_set']]
+resultstab2['misspec'] = ['Misspecified' if k==1 else 'Correctly Specified' for k in resultstab2['misspec']]
+resultstab2.rename(columns={'k_set': 'Simulated Population', 'misspec': 'Specification'}, inplace=True)
+```
+
+```{python}
+#| echo: false
+#| label: fig-5
+#| fig-cap: \textbf{Fair Regression Estimator Accuracy and Fairness for Correctly Specified and Misspecified Fair Regression Estimators by Simulation Setting.} Each plotted point corresponds to the result of a single simulation experiment under one of the score function variations. 
+#| fig-subcap:
+#|   - 'Simulation Setting 1'
+#|   - 'Simulation Setting 2'
+#|   - 'Simulation Setting 3'
+#| layout: [[30,-5,30,-5,30]]
+
+for pop in range(3):
+  fig = plt.figure(figsize=(threewidth, threeheight))
+  temp = resultstab2[resultstab2['Simulated Population'] == f'Population {pop+1}']
+  sns.scatterplot(data=temp, x='mean_unfairness', y='accuracy', hue='Specification', alpha=0.03, legend = (pop == 0), palette = ['red','gold'])
+  plt.xlabel('Mean Unfairness')
+  plt.ylabel('Accuracy')
+  plt.ylim(0.4, .8)
+  plt.xlim(unfairdims[0],0.12)
+  if pop == 0:
+    leg = plt.legend(loc='lower right')
+    for lh in leg.legend_handles: 
+      lh.set_alpha(1)
+  plt.show()
+```
+
+{{< pagebreak >}}
+
+### References {.unnumbered}
+::: {#refs}
+:::

@@ -1,0 +1,476 @@
+---
+title: ESRD Analytic File Maker
+format: html
+jupyter: python3
+---
+
+Set up the basic access pathway. 
+
+```{python}
+import pandas as pd
+from google.cloud import bigquery
+
+client = bigquery.Client()
+```
+
+Open baseline analytic dataset using a query. 
+
+```{python}
+query = """
+SELECT *
+FROM
+som-nero-phi-sherrir-afc.cnaks_afc.cohort
+"""
+base_analytic = client.query(query).to_dataframe()
+base_analytic.head()
+backup = base_analytic
+```
+
+Basic cleaning: Python formatting for dates, filtering out patients with missing race or ethnicity data.  
+
+```{python}
+base_analytic = backup
+# date formatting
+base_analytic["last_egfr"] = (
+    pd.to_datetime(["2019-01-01"] * base_analytic.shape[0])
+    - pd.to_datetime(base_analytic["last_egfr_date"])
+).dt.days
+# necessary step for later: drop if null race or ethnicity
+base_analytic = base_analytic[base_analytic["white"].notna() | base_analytic.hispanic.notna()]
+```
+
+Get all relevant python packages
+
+```{python}
+import numpy as np
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, recall_score
+from sklearn.calibration import calibration_curve
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+import matplotlib.pyplot as plt
+from tableone import TableOne
+import sys
+from fairlearn.reductions import TruePositiveRateParity, ExponentiatedGradient, GridSearch
+
+sys.path.append("code")
+from pen_regression import *
+```
+
+Enumerate and clean continuous and categorical outcomes. 
+
+```{python}
+# list off continuous variables
+cont = [
+    "mean_diastolic",
+    "mean_systolic",
+    "max_ha1c",
+    "mean_ha1c",
+    "max_bili",
+    "mean_bili",
+    "age",
+    "min_egfr",
+]
+groups = ["ESRD"]
+
+# one off fix for max_bili
+base_analytic["max_bili"] = pd.to_numeric(base_analytic["max_bili"], errors="coerce")
+
+# list off categorical variables
+cat = [
+    "female",
+    "white",
+    "black",
+    "asian",
+    "hispanic",
+    "ESRD",
+    "ckd",
+    "ckd2",
+    "dm2",
+    "kidstone",
+    "glomerulonephritis",
+    "proteinuria",
+    "pyelonephritis",
+    "htn_emerg",
+]
+
+# recode categorical NAs to False
+for col in cat:
+    base_analytic[col] = base_analytic[col].fillna(False)
+```
+
+Make a non-white hispanic category
+
+```{python}
+base_analytic['nw_hispanic'] = base_analytic['hispanic'] * ~base_analytic['white']
+```
+
+Filter to achieve desired cohort
+
+```{python}
+base_analytic2 = base_analytic[
+    base_analytic["ckd2"]
+    & (base_analytic["age"] >= 35)
+    & (base_analytic["max_systolic"] >= 140)
+]
+```
+
+Generate 'table one' of characteristics by ESRD status. 
+
+```{python}
+# eliminate auxillary / outcome categorical variables
+cat = [c for c in cat if c not in ['hispanic','ckd','ckd2','ESRD']]
+
+demotab = TableOne(base_analytic2, columns=cont+cat+groups, continuous=cont, categorical=cat, groupby='ESRD', pval=False)
+demotab.to_csv('tables/tab1_baseline.csv')
+```
+
+Restructure data for supervised learning: Make X and y. 
+
+```{python}
+# create X and y in logistic regression compatible formats
+X = base_analytic2.drop(
+    columns=[
+        "person_id",
+        "last_egfr_date",
+        "dx_date",
+        "white",
+        "black",
+        "asian",
+        "AIAN",
+        "NHPI",
+        "MENA",
+        "LatAm",
+        "hispanic",
+        'nw_hispanic',
+        "ESRD",
+        "ckd",
+        "ckd2",
+        "provider_id",
+        "care_site_id",
+        "last_egfr",
+        "SDI_CT",
+        "ICE_INC_WNH_CT",
+        "zip"
+    ]
+)
+
+# try another filter before X
+y = base_analytic2["ESRD"]
+
+# final NA cleaning for LR package to run
+for c in cont:
+    if c in [
+        "mean_ha1c",
+        "mean_bili",
+        "min_egfr",
+    ]:
+        X[c + "_missing"] = X[c].isnull()
+    X[c].fillna(0, inplace=True)
+for c in cat:
+    if c in X.columns:
+        X[c].fillna(False, inplace=True)
+```
+
+Fit the baseline (unpenalized) logistic regression and report performance across race / ethnicity groups. 
+
+```{python}
+base_LR = LogisticRegression(penalty=None, fit_intercept=True).fit(X, y)
+
+## Declare global probability threshold here!!
+p_cut = 0.15
+
+# for plot
+ppreds = []
+
+demos = ["black", "nw_hispanic", "asian", "white", "total"]
+group_performance = pd.DataFrame(
+    columns=["demo", "n", "prev", "pred_prob", "pred_prev", "sensi", "speci", "acc"]
+)
+for i, demo in enumerate(demos):
+    # generate predictions
+    if demo == "total":
+        y_demo = y
+        p_pred = base_LR.predict_proba(X)
+    else:
+        y_demo = y[base_analytic[demo]]
+        p_pred = base_LR.predict_proba(X[base_analytic[demo]])
+    ppreds = ppreds + [p_pred[:, 1]]
+    y_pred = p_pred[:, 1] > p_cut 
+    n = y_pred.shape[0]
+    # prevalence and predicted prevalence
+    prev = np.mean(y_demo)
+    pred_prob = np.mean(p_pred, axis=0)[1]
+    pred_prev = np.mean(y_pred, axis=0)
+    # sensitivity, specificity, accuracy
+    sensi = recall_score(y_demo, y_pred)
+    speci = recall_score(np.logical_not(y_demo), np.logical_not(y_pred))
+    acc = accuracy_score(y_demo, y_pred)
+    # combine into dataframe
+    group_performance = pd.concat(
+        [
+            group_performance,
+            pd.DataFrame(
+                [[demo, n, prev, pred_prob, pred_prev, sensi, speci, acc]],
+                columns=group_performance.columns,
+            ),
+        ]
+    )
+# make predicted probability bar plot
+bins = np.linspace(0, 0.2, 20)
+plt.hist(ppreds, bins, histtype="bar", label=demos, density=True)
+plt.legend()
+plt.xlabel("Predicted ESRD Proability")
+plt.ylabel("Percentage of Patients")
+plt.savefig("figures/predprobs_20.pdf")
+# save baseline LR performance table
+group_performance.to_csv("tables/logistic_baseline.csv", index=False)
+group_performance
+```
+
+Generate calibration plot for baseline logistic regression. 
+
+```{python}
+#| eval: false
+## calibration plot
+
+# Probability estimate
+prob_pos = base_LR.predict_proba(X)
+
+# True and Predicted Probabilities
+true_pos, pred_pos = calibration_curve(y.values, prob_pos[:, 1], n_bins=10)
+# Plot the Probabilities Calibrated curve
+plt.plot(pred_pos, true_pos, marker="o", linewidth=1, label="Logistic Regression")
+# Plot the Perfectly Calibrated by Adding the 45-degree line to the plot
+plt.plot([0, 1], [0, 1], linestyle="--", label="Perfectly Calibrated")
+# Set the title and axis labels for the plot
+plt.title("Probability Calibration Curve")
+plt.xlabel("Predicted Probability")
+plt.ylabel("True Probability")
+# Add a legend to the plot
+plt.legend(loc="best")
+plt.savefig("figures/baseline_calibration.pdf")
+
+# Show the plot
+plt.show()
+```
+
+Additional data prep to format appropriately. 
+
+```{python}
+Z = base_analytic2[["black", "asian", "nw_hispanic"]].to_numpy()
+Y = y.to_numpy()[:, np.newaxis]
+# add reference group as final Z
+refgrp = base_analytic2[["white"]].to_numpy()
+Z = np.hstack((Z, refgrp))
+# standardization for interpretability
+scaler = StandardScaler()
+X_std = scaler.fit_transform(X)
+# create train test split
+Idp_train, Idp_test, y_train, y_test = train_test_split(
+    np.hstack((X_std, Z)), Y, test_size=0.25,
+    random_state=626
+)
+
+# save table of predictor means
+X.mean(axis=0).to_csv("tables/esrd_predmeans.csv", index=False)
+```
+
+Perform grid search to fit estimators and evaluate on test data. 
+
+```{python}
+n_iter = 100
+# establish and fit the grid
+val_scale = loguniform(1e-4, 1e-1)
+lams = {"l1": val_scale, "l2": val_scale, "l3": val_scale}
+best_params, best_scores = random_search_cv_custom(
+    CustomRegression, Idp_train, y_train, param_distributions=lams, 
+    n_iter = n_iter, cv_folds=3, p_cut = p_cut
+)
+
+# evaluate results
+results_list = []; coefs = []
+# baseline unpenalized
+restab, predictor = model_evaluator_gen(
+    Idp_train,
+    y_train,
+    Idp_test,
+    y_test,
+    [0,0,0],
+    0,
+    p_cut,
+    3,
+    'na'
+    )
+results_list += [restab]
+coefs += [predictor.penlr_.coef_[0]]
+# evaluations for all high-scoring penalized versions
+for comps, lgs in best_params.items():
+    comp_list = comps.split('_')
+    restab, predictor = model_evaluator_gen(
+        Idp_train,
+        y_train,
+        Idp_test,
+        y_test,
+        [lgs["l1"], lgs["l2"], lgs["l3"]],
+        comp_list[1],
+        p_cut,
+        3,
+        comp_list[0]
+        )
+    results_list += [restab]
+    coefs += [predictor.penlr_.coef_[0]]
+
+result_tab = pd.concat(results_list, ignore_index=True)
+coef_tab = pd.DataFrame(coefs, columns = list(X.columns) + ['Intercept'])
+pd.concat((result_tab, coef_tab), axis = 1).to_csv("tables/esrd_bigtab.csv", index=False)
+
+```
+
+Run comparison methods. 
+
+```{python}
+def comp_evaluator(
+    fitted_model,
+    X_test: np.array,
+    y_test: np.array,
+    Z_test: np.array,
+    kset: int = 0,
+    a: int = 3,
+    method: str = 'ExpGrad',
+    time: datetime.timedelta = 0,
+    p_cut = 0.15
+):
+    # generate predictions
+    if method[:3] == 'Exp':
+        y_pred = fitted_model.predict(X_test)
+    else:
+        y_pred = fitted_model.predict_proba(X_test)[:,1] > p_cut
+
+
+    # get accuracy for actual model
+    acc = np.mean(y_test == y_pred)
+
+    y_true_ref = y_test[Z_test[:, a] == 1]
+    y_pred_ref = y_pred[Z_test[:, a] == 1]
+    ref_frac1 = np.sum(np.multiply(y_pred_ref, y_true_ref)) / np.sum(y_true_ref)
+    # get opportunity differences
+    op_dif = []
+    ng = []
+    tpr_dif = []
+    for i in range(a):
+        # subset to group data
+        y_true_z = y_test[Z_test[:, i] == 1]
+        y_pred_z = y_pred[Z_test[:, i] == 1]
+        # calculate TPRs, take differences from reference
+        op_dif += [np.mean(y_pred_z) - np.mean(y_true_z)]
+        tpr_dif += [
+            min(np.sum(np.multiply(y_pred_z, y_true_z)) / np.sum(y_true_z) - ref_frac1, 0)
+        ]
+        ng += [np.sum(Z_test[:, i] == 1)]
+    mean_unfair = np.sum(np.multiply(np.array(tpr_dif), np.array(ng))) / sum(ng)
+    max_unfair = min(tpr_dif)
+    model_outputs = pd.DataFrame(
+        {
+            "method": [method],
+            "k_set": [kset],
+            "accuracy": [acc],
+            'sensi': [recall_score(y_test, y_pred)],
+            'speci': [recall_score(np.logical_not(y_test), np.logical_not(y_pred))],
+            "mean_unfairness": [mean_unfair],
+            "max_unfairness": [max_unfair],
+            "A_unfairness": [tpr_dif[0]],
+            "B_unfairness": [tpr_dif[1]],
+            "C_unfairness": [tpr_dif[2]],
+            'runtime': [time]
+        }
+    )
+    return model_outputs
+
+
+# make simulated population
+a = 3
+runtimes = []
+fitted_estimators = []
+
+### fit the comparison methods
+## reduction: exponentiated gradient
+for i, epsilon in enumerate([0.1, 0.01]):
+    startime = datetime.datetime.now()
+    fitted_estimators += [ExponentiatedGradient(
+        estimator=LogisticRegression(solver="liblinear", fit_intercept=True),
+        constraints=TruePositiveRateParity(difference_bound=epsilon))]
+    fitted_estimators[i].fit(Idp_train[:,:(Idp_test.shape[1]-a-1)], y_train, sensitive_features=Idp_train[:,(Idp_test.shape[1]-a-1):])
+    runtimes += [(startime - datetime.datetime.now())]
+
+## reduction: gridsearches
+for i, cw in enumerate([0.25, 0.5, 0.75]):
+    startime = datetime.datetime.now()
+    fitted_estimators += [GridSearch(
+        estimator=LogisticRegression(solver="liblinear", fit_intercept=True),
+        constraints=TruePositiveRateParity(difference_bound=epsilon),
+        constraint_weight=cw,
+        grid_size = 128)]
+    fitted_estimators[i+2].fit(Idp_train[:,:(Idp_test.shape[1]-a-1)], y_train, sensitive_features=Idp_train[:,(Idp_test.shape[1]-a-1):])
+    runtimes += [(datetime.datetime.now() - startime)]
+
+
+# evaluate
+methods = ['ExpGrad_1', 'ExpGrad_01', 'Grid25', 'Grid50', 'Grid75']
+results_list = []
+for i, est in enumerate(fitted_estimators):
+    results_list += [comp_evaluator(est, Idp_test[:,:(Idp_test.shape[1]-a-1)], np.squeeze(y_test), Idp_test[:,(Idp_test.shape[1]-a-1):],a=3,method=methods[i], p_cut = 0.15)]
+
+# get coef composite for reductions
+coefs = [np.zeros(Idp_test.shape[1]-a) for _ in range(5)]
+# special weighted ave for exp
+for j, prd in enumerate(fitted_estimators[:2]):
+    for i in range(len(prd.predictors_)):
+        coefs[j] += np.concat((prd.predictors_[i].intercept_, prd.predictors_[i].coef_[0,:])) * prd.weights_[i]
+    coefs[j] = coefs[j]
+for j in range(2,5):
+    coefs[j] = fitted_estimators[j].predictors_[fitted_estimators[j].best_idx_].coef_[0,:]
+
+result_tab_comp = pd.concat(results_list, ignore_index=True)
+coef_tab = pd.DataFrame(coefs, columns = (['Intercept'] + list(X.columns)))
+pd.concat((result_tab_comp, coef_tab), axis = 1).to_csv("tables/esrd_comp.csv", index=False)
+
+```
+
+Make table comparing individuals whose classification changes between the penalized and unpenalized method to those whose classification does not change. 
+
+```{python}
+inputs = np.hstack((X_std, Z))
+# make baseline unpen LR
+base_LR = LogisticRegression().fit(inputs, y)
+# make ideal candidate lr
+bestset = result_tab.iloc[1]
+proposed_LR = CustomRegression(l1 = bestset['l1'], l2 = bestset['l2'], l3 = bestset['l3'])
+proposed_LR.fit(inputs, y)
+testers = pd.DataFrame(np.hstack((X.to_numpy(), Z)), columns = list(X.columns) + ['black', 'asian', 'nw_hispanic', 'white'])
+testers['changer'] = (base_LR.predict_proba(inputs)[:,1] > 0.15) != proposed_LR.predict(inputs, p_cut = .15)
+cat = [c for c in [
+    "female",
+    "white",
+    "black",
+    "asian",
+    'nw_hispanic',
+    "dm2",
+    "kidstone",
+    "proteinuria",
+    "pyelonephritis",
+    "htn_emerg",
+    "glomerulonephritis"]] + ['mean_ha1c_missing', 'mean_bili_missing','min_egfr_missing']
+cont = [c for c in cont if c not in ['max_diastolic', 'max_systolic']]
+testers['ESRD'] = list(y)
+testers[cont] = testers[cont].astype(int)
+testers[cat] = testers[cat].astype(bool)
+for measure in ['ha1c','bili']:
+    testers[f'max_{measure}'] = testers[f'max_{measure}'].mask(testers[f'mean_{measure}_missing'] == 1, np.nan) 
+    testers[f'mean_{measure}'] = testers[f'mean_{measure}'].mask(testers[f'mean_{measure}_missing'] == 1, np.nan) 
+testers[f'min_egfr'] = testers[f'min_egfr'].mask(testers[f'min_egfr_missing'] == 1, np.nan) 
+# CUSTOM: censor small cells
+fincat = [c for c in cat if c not in ['kidstone', 'htn_emerg', 'glomerulonephritis']]
+changestab = TableOne(testers, columns=cont+fincat+['ESRD'], continuous=cont, categorical=fincat+['ESRD'], groupby='changer', pval=False)
+changestab.to_csv('tables/ESRD_changers.csv')
+```

@@ -1,0 +1,587 @@
+---
+title: Penalized Fair Regression for Multiple Groups in Chronic Kidney Disease
+format:
+  jasa-pdf:
+    keep-tex: true   
+    journal:
+      blinded: false
+  html:
+    code-fold: true
+  docx: default
+author:
+  - name: Carter H. Nakamoto
+    affiliations:
+      - name: 615 Crothers Way Encina Commons MC6019 Stanford, CA 94305, USA
+        department: Department of Health Policy, Stanford University
+    email: cnaks21@stanford.edu
+    orcid: 0009-0000-2085-1329
+  - name: Lucia Lushi Chen
+    affiliations:
+      - name: Psyfy Inc.
+  - name: Agata Foryciarz
+    affiliations:
+      - name: Department of Epidemiology and Population Health, Stanford University
+  - name: Sherri Rose
+    affiliations:
+      - name: Department of Health Policy, Stanford University
+abstract: |
+  Fair regression methods have the potential to mitigate societal bias concerns in health care, but there has been little work on penalized fair regression when multiple groups experience such bias. We propose a general regression framework that addresses this gap with unfairness penalties for multiple groups. Our approach is demonstrated for binary outcomes with true positive rate disparity penalties and can be efficiently implemented through reduction to a cost-sensitive classification problem. We additionally introduce novel score functions for automatically selecting penalty weights. Our penalized fair regression methods are empirically studied in simulations, where they achieve a fairness-accuracy frontier beyond that of existing comparison methods. Finally, we apply these methods to a national multi-site primary care study of chronic kidney disease to develop a fair classifier for end-stage renal disease. There we find substantial improvements in fairness for multiple race and ethnicity groups who experience societal bias in the health care system without any appreciable loss in overall fit. 
+keywords: algorithmic bias, chronic kidney disease, fair regression, penalized regression
+bibliography: fairpenalties.bib
+jupyter: python3
+---
+
+
+## INTRODUCTION
+
+Fair regression methods modify the loss function to encode fairness measures. These loss functions typically include a single penalty or constraint based on a measure of unfairness for one group [@calders_controlling_2013; @berk_convex_2017;@corbett-davies_measure_2023]. Subsequent work has developed additional technical methods for solving single group penalized or constrained fair regression problems [@dwork_decoupled_2017; @chzhen_fair_2020; @lohaus_too_2020; @mishler_fade_2021] and tailored them for applications in cyberbullying [@gencoglu_cyberbullying_2021] and health policy [@zink_fair_2020]. 
+
+Although there is a mathematical equivalence between penalized and constrained methods such that each penalized regression has a corresponding constrained regression with the same solution, most methods formulate their fair regressions as constrained optimization problems. This overlooks that penalty-based approaches have several advantages relative to constraint-based approaches that warrant further development. For one, the approaches are conceptually distinct. A constraint is a user-imposed maximum level of allowable unfairness, while a penalty is a user-imposed tradeoff between accuracy and fairness. These conceptions are appropriate for different applications and their varied social and regulatory contexts. The two approaches may also require divergent computational implementations. Much of the constrained optimization literature involves development of original solution algorithms [@kearns_preventing_2018; @komiyama_nonconvex_2018], whereas there are many existing algorithms for minimizing penalized loss functions under different conditions, including gradient descent, Newton's method, Nelder-Mead, and their variations [@nelder_simplex_1965; @shanno_conditioning_1970; @loshchilov_decoupled_2019]. Outside of the fairness literature, penalized methods are commonly used in statistics applications [@hoerl_ridge_1970; @tibshirani_regression_1996] and fair penalty methods can benefit from advances established in those applications. 
+
+Fair regression has the potential to reduce the impact of societal bias in health care. However, only a small number of fair regression works have examined realistic use cases in health care [@zink_fair_2020; @mcguire_improving_2021; @pfohl_empirical_2021; @pfohl_net_2022; @wang_enhancing_2025]. Health care applications have complex ethical considerations, many of which are unique due to the complexity of medical systems [@chen_ethical_2021; @chen_algorithmic_2023; @feng_fair_2025]. For example, questions about how to handle certain patient characteristics in clinical algorithms, such as race, are nuanced such that not all fair regression approaches may be appropriate [@cusick_algorithmic_2024; @zink_race_2024]. 
+
+A major limitation of most fair regression approaches is that they focus on fairness with respect to a single group when multiple groups typically face unfairness in real world settings [@yang_fairness_2020; @chen_ethical_2021; @liu_practical_2022; @wang_enhancing_2025]. The joint consideration of multiple groups in fair regression is non-trivial, with challenges related to the optimal weighting of the groups as well as the additional computational complexity [@kearns_preventing_2018; @narasimhan_approximate_2020; @diana_minimax_2021]. We refer here to multiple groups rather than sensitive attributes to avoid the particular social and sometimes legal connotations of the latter, reflecting the breadth of possible groups for which these methods may be appropriate [@deho_should_2023]. 
+
+While limited compared to methods for single groups, there is a small literature on fair constrained regression for multiple groups establishing basic frameworks and efficient solution methods [@kearns_preventing_2018; @narasimhan_learning_2018; @agarwal_fair_2019; @zafar_fairness_2019; @narasimhan_approximate_2020; @yang_fairness_2020; @diana_minimax_2021; @hu_sequentially_2024; @wang_enhancing_2025]. 
+Of particular note, @agarwal_reductions_2018 proposed a method that reduces fair binary classification to a sequence of cost-sensitive classification problems, enabling the use of efficient off-the-shelf classifiers for fair constrained regression. This approach is flexible across common fairness metrics and was extended in multiple later papers, including to continuous outcomes [@agarwal_fair_2019] and to non-linear but convex constraints, including demographic parity and equalized odds, and convex or fractional-convex losses [@narasimhan_learning_2018]. Much of the constrained optimization literature involves solving a min–max saddle-point game between a predictor and an adversary enforcing fairness constraints, often leading to non-convex objectives, instability, substantial hyperparameter sensitivity, and high computational cost, especially when group sizes are imbalanced. 
+
+In contrast, we have identified even fewer papers that implement fair penalized regression with respect to multiple groups, further highlighting the lesser focus on this formulation of the estimation problem. 
+@perez-suay_fair_2017 used the Hilbert Schmidt independence criterion for fairness penalties. This method is only compatible with one measure of fairness, demographic parity, which is satisfied when estimated outcomes are independent of groups. A ridge penalty method that builds on @komiyama_nonconvex_2018 to enforce demographic parity was developed in @scutari_achieving_2022. Their approach notably includes group identifiers as predictors, which will not be appropriate for some estimation problems. They also proposed an extension to other fairness metrics, including equalized odds. 
+The focus of these first two papers on demographic parity restricts applications in health care, where the most pressing fairness concern may differ from and be incompatible with demographic parity [@seyyed-kalantari_underdiagnosis_2021; @chen_algorithmic_2023]. 
+@pfohl_empirical_2021 and @pfohl_net_2022 implement fair penalized regression with a single penalty term that measures unfairness with respect to a single categorical group, capturing a subset of multiple group fair regression problems. 
+Lastly, @liu_practical_2022 introduced a fairness measure built on cross-covariance operators on reproducing kernel Hilbert Spaces which were used to construct unfairness penalties. While the approach is flexible with respect to fairness measures, its complexity presents a potential barrier to its implementation and no code is available.
+
+We propose a general framework for regression with unfairness penalties for multiple groups. Logistic regression is implemented as a demonstration estimator for this framework, and true positive rate disparity is used as the demonstration unfairness measure, although our framework is broad and allows for other choices. The penalized regression problem is solved efficiently through its conversion into a cost-sensitive classification problem and, in turn, into a weighted classification problem. Optimal penalties for each group's unfairness measure are automatically selected given a user-specified tradeoff between accuracy and fairness via a random search and score function. 
+
+Our application creates a fair penalized regressor classifying whether high-risk individuals with chronic kidney disease (CKD) will develop end stage renal disease (ESRD) in the next year. CKD is prevalent, affecting an estimated 14% of the US adult population [@cdc_chronic_2025]. In severe cases, CKD progresses to ESRD, requiring either dialysis or kidney transplant, but progress can be delayed through treatment and management. Black, Hispanic, Native American, and Asian patients all have higher incidence and prevalence of ESRD than white patients, and they have worse kidney function, on average, than white patients when initiating treatment for ESRD [@johansen_us_2025]. Identifying patients at risk for ESRD could help these patients engage in more intensive treatment and slow CKD progression, and fair regression is a potential approach to partially address disparities in progression to ESRD. 
+Another key algorithm for defining CKD progression, the estimated glomerular filtration rate (eGFR) equation, was recently revised to remove race adjustment, so CKD may be a context where it is especially appropriate to use a fair regression method that can increase fairness without using race adjustments [@cusick_algorithmic_2024]. 
+
+This work contributes to several understudied areas of the literature. The joint consideration of fairness with respect to multiple groups remains novel, and we additionally derive multiple ways of mathematically synthesizing fairness information across those groups. Further, we introduce a method for users to choose a different penalty for each group automatically based on their preferred fairness-accuracy tradeoff. The application of fair regression to health care with the contextually appropriate fairness metric of true positive rate disparity is also new. 
+
+In @sec-rp, we describe the research problem, including establishing the variables and defining fairness for this problem. In @sec-methods, we introduce the penalized regression approach. We define the loss function, describe score functions for selecting penalties, and characterize the random search approach for selecting penalties. In @sec-sim, we conduct a simulation study to examine our method's performance against other available multi-group fair regression methods with varied data distributions and score functions. In @sec-application, we apply our methods to the chronic kidney disease study and present performance metrics for the resulting classifiers. We conclude in @sec-discussion.
+
+## RESEARCH PROBLEM {#sec-rp}
+
+We seek to estimate a conditional mean with $Y$ as a function of input variables $X$ in a manner that is fair with respect to each group $g \in G$. Each group $g$ has $n_g$ individuals. We will also define a reference group $r$, a set of individuals pre-specified to be an appropriate comparison. Let $\mathbb{I}_{g}$ be a random variable indicating membership in group $g$ and $\mathbb{I}_{r}$ be a random variable indicating membership in reference group $r$. Our observed data contain $n$ individuals, indexed by $i$. 
+
+### Fairness Formulation
+
+We use true positive rate equality, based on equal opportunity [@hardt_equality_2016], which holds if the true positive rate of our estimator for $Y$ is the same for members of group $g$ as it is for a reference group $r$. A focus on true positive rate fairness (or, equivalently, false negative rate fairness) is appropriate for the problem of low rates of screening and diagnosis among high-risk patients in certain groups [@seyyed-kalantari_underdiagnosis_2021]. This is especially true in cases where the benefit of a diagnosis is much greater than the potential harm, as this implies that false negatives are much more costly than false positives and should be the primary fairness concern. We can express different versions of this fairness measure for estimated outcomes and for estimated probabilities. The estimated outcome formulation is more interpretable. However, the estimated probability formulation is differentiable, so it can be easily minimized, and it does not depend on a particular classification threshold.
+
+Let $j$ index individuals in group $g$, $k$ index individuals in reference group $r$, and $U$ be a measure of unfairness. For estimated outcomes, the equal opportunity unfairness measure $U_{EO}$ is given by:
+$$
+U_{EO} = \frac{\sum_{k \in r} Y_k \hat Y_k}{\sum_{k \in r} Y_k} - \frac{\sum_{j\in g}Y_j \hat Y_j}{\sum_{j\in g}Y_j},
+$$ {#eq-fair-yhat}
+where $\hat{Y}$ represents predicted outcomes. For estimated probabilities, we substitute $\hat P$ for $\hat Y$ as has been done in prior literature [@wang_enhancing_2025]. This version of the unfairness measure, which we call $U_{EOP}$, is given by:
+$$
+U_{EOP} = \frac{\sum_{k \in r} Y_k \hat P_k}{\sum_{k \in r} Y_k} - \frac{\sum_{j\in g}Y_j \hat P_j}{\sum_{j\in g}Y_j}.
+$$ {#eq-fair-phat}
+
+### Fairness Measures for Multiple Groups {#sec-measures-groups}
+
+There is no consensus in the literature on optimal ways to evaluate fairness for multiple groups simultaneously, as much of the past fair regression work characterizes unfairness for each group individually [@agarwal_reductions_2018; @komiyama_nonconvex_2018]. Given the unfairness metrics in @eq-fair-yhat and @eq-fair-phat for a given group and reference, which we will denote $U_g$, we study three approaches to aggregating across groups. 
+
+1. We propose a group population-weighted average. This will be the primary formulation: 
+$U_{PW} = \sum_{g \in G} n_g U_g / \sum_{g \in G} n_g$.
+
+2.   We also propose a group-weighted average, which will give equal weight to smaller and larger groups:
+$U_{GW} = \sum_{g \in G} U_g / \sum_{g \in G} 1$.
+
+3.  Additionally, we study a maximum across all group-level unfairness measures, based on @ghosh_characterizing_2022:
+$U_{Max} = \max_{g \in G} U_g$.
+
+## METHODS {#sec-methods}
+
+Our novel penalized fair regression approach generalizes to various fairness metrics, outcome variable types, and estimator architectures. We focus our main demonstration of the method on logistic regression with true positive rate disparity penalties. 
+Web Appendix A contains loss functions for continuous outcomes with the mean residual difference as the unfairness metric. 
+
+### Regression with Fairness Penalties {#sec-penloss}
+
+The penalty term for each group $g$ will consist of a group-specific penalty weight $\lambda_g$ and a measure of unfairness for that group $U_g$: $\lambda_g U_g$. In the case of logistic regression, we derive the penalized loss by combining binary cross-entropy loss with the unfairness measure defined in @eq-fair-phat and penalty weights $\lambda_g$. We additionally multiply the group unfairness penalty terms by group size $n_g$. The resulting loss function is
+$$
+L = - \sum_{i=1}^n \{ Y_i\ln(\hat P_i) + (1-Y_i)\ln(1 - \hat P_i) \} + \sum_{g \in G} \lambda_g n_g \left(\frac{\sum_{k\in r}Y_k\hat P_k}{\sum_{k\in r}Y_k} - \frac{\sum_{j\in g}Y_j\hat P_j}{\sum_{j\in g}Y_j} \right). 
+$$ 
+The above loss function is convex but does not have a closed form minimizing solution. We employ an efficient optimization method based on the reductions approach of @agarwal_reductions_2018. In this approach, we use cost minimization loss to reconceptualize the penalized fair regression as a cost-sensitive classification problem, which can be implemented as a weighted non-cost-sensitive classification problem. In this formulation, the weights are
+$$
+W_i = |C_i^0 - C_i^1| = \left|Y_i\left \{ 2 - \sum_{g \in G}\lambda_g n_g \left( \frac{\mathbb{I}_{ri}}{\sum_{k\in r}Y_k } - \frac{\mathbb{I}_{gi}}{\sum_{j\in g}Y_j}  \right) \right\} - 1\right|,
+$$ 
+and modified outcomes are $Y_i' = \mathbb{I}(C_i^0 > C_i^1)$. It is then possible to perform the desired fair penalized regression with a wide array of standard classifiers (e.g., logistic regression, support vector machines, decision trees) that are compatible with individual-level sample weighting. More detailed derivations are in Web Appendix B. 
+
+### Selecting Penalty Coefficients {#sec-pen}
+
+Next, we identify the appropriate unfairness penalty weights $\lambda_g \forall g \in G$ using a random search. A number of sets of candidate values for $\lambda_g$ are drawn from a pre-specified distribution, and the penalized regression estimator is fit for each set. The penalty weight set that yields the highest score is selected. We propose an original score function that is the weighted average of rescaled measures of accuracy and fairness, with a user-specified weight, $\alpha$, which can be thought of as a fairness score weight, to determine the relative contribution of accuracy and fairness for the score. 
+
+The accuracy term is a transformation of accuracy rescaled such that it is $1$ at a reasonable lower bound for accuracy and $0$ at a reasonable upper bound. The basis for the accuracy term is the share of units for which the estimator's classification matches the outcome: $A = \frac1n \sum_{i=1}^n \mathbb{I}(Y_i= \hat Y_{i})$. We set the reasonable upper bound to be the unpenalized estimator's accuracy $A_{UP}$ and the reasonable lower bound at $0.5$. The corresponding rescaled accuracy term is $A_{RS} = (A_{UP} - A)/(A_{UP} - 0.5)$.
+
+Similarly, the fairness term is a transformation of a fairness metric rescaled to be $1$ at a reasonable lower bound for fairness and $0$ at a reasonable upper bound. The basis for the fairness term is true positive rate disparity, measured as in @eq-fair-yhat. For each group, we take the maximum of the unfairness term and $0$, considering unfairness to be the extent to which the true positive rate of group $g$ is lower than that of the reference group $r$. We synthesize across groups using either a population-weighted average, group-weighted average, or maximum, as described in @sec-measures-groups, and rescale by dividing by the analagous measure for the standard unpenalized estimator. Let $\hat Y_{UP}$ denote the unpenalized estimator's outcome estimate. The rescaled unfairness term in the population-weighted specification is
+$$
+U_{RS} = \frac{\sum_{g \in G}n_g \max \left( U_g, 0\right)}{\sum_{g \in G}n_g \max \left( U_{UP,g},0\right)} = 
+\frac{\sum_{g \in G}n_g \max \left( \frac{\sum_{k\in r}Y_k\hat Y_k}{\sum_{k\in r}Y_k} - \frac{\sum_{j\in g}Y_j \hat Y_{j}}{\sum_{j\in g}Y_j}, 0\right)}{\sum_{g \in G}n_g \max \left(\frac{\sum_{k\in r}Y_k\hat Y_{UP,k}}{\sum_{k\in r}Y_k} - \frac{\sum_{j\in g}Y_j\hat Y_{UP,j}}{\sum_{j\in g}Y_j},0\right)}.
+$$ 
+It evaluates to $0$ if the candidate estimator achieves $0$ unfairness for all groups and to $1$ if the candidate estimator has the same unfairness as the unpenalized estimator. 
+
+The score is the negative weighted average of rescaled accuracy and rescaled fairness with a user-specified weight $\alpha \in [0,1]$: $-s = \alpha U_{RS} + (1-\alpha) A_{RS}$. For $\alpha = 0$, maximizing the score function is equivalent to maximizing accuracy with no fairness concerns as in an unpenalized regression estimator. For $\alpha = 1$, maximizing this score function is equivalent to minimizing true positive rate disparities without regard for accuracy.
+
+Our penalty weight search is a random search, which yields higher maximum scores more efficiently than a grid search [@bergstra_random_2012]. All the group penalty weight candidates are sampled from identical independent log uniform distributions. We favor this approach over greedy sequential approaches because it allows for optimization with respect to multiple score functions simultaneously. The breadth of the penalty weight candidate search space and number of candidate draws will vary for each fair penalized regression problem, but we include some empirical demonstrations of different choices in our simulation study. 
+
+
+```{python}
+#| echo: false
+# bring in relevant libraries
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+import warnings
+from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.metrics import r2_score
+from scipy.optimize import minimize
+from scipy.stats import norm
+warnings.filterwarnings('ignore')
+import matplotlib.pyplot as plt
+from IPython.display import Markdown
+from tabulate import tabulate
+import sys
+import seaborn as sns
+import os
+import random
+sys.path.append("code")
+from simpop import *
+```
+
+### Computational Implementation
+
+Penalized regression is implemented using a custom `sklearn` estimator with the `BaseEstimator` function, primarily to encode the construction of penalty-based sample weights for the reduction and implement the novel score function. The logistic regression itself is fit with the base implementation from `sklearn`. Random search steps in the penalty weight selection process are implemented with cross-validation facilitated by `sklearn`'s `KFold` but without using `sklearn`'s `RandomSearchCV` to accommodate multiple complex score functions. Score functions have original implementations to accommodate the inclusion of multiple groups, reference groups, and unpenalized comparison estimators. Project code is available in a publicly accessible GitHub repository. 
+
+## SIMULATION STUDY {#sec-sim}
+
+Our simulation was designed such that the groups have separate data generating processes and unfair true positive rate disparities with respect to the reference group. We had a population of 1,000,000 per simulation with three groups, with substantial overlap between the groups in all settings. Simulation setting 1 has all moderately sized groups, simulation setting 2 has one small group, and all groups are small in simulation setting 3. The data generating process is available in Web Appendix C. 
+
+### Simulation Implementation {#sec-simmethods}
+
+We aimed to explore the performance of various score functions constructed using each of the three group synthesis mechanisms in @sec-pen with fairness score weights $\alpha \in \{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.99 \}$. Additionally, we studied different numbers of candidate penalty weight set draws $[10, 20, \dots, 100]$ to empirically characterize changes in accuracy and fairness as the number of candidate sets increases. Lastly, we investigated robustness to functional form misspecification by omitting $X_1$ as an input variable. Comparison estimators were a baseline unpenalized regression and the fair reductions constrained regression method from @agarwal_reductions_2018 as implemented in the `fairlearn` python package. The exponentiated gradient algorithm was implemented with allowed fairness constraint violations of $0.1$ and $0.01$, and the grid search algorithm was used with constraint weights of $0.25$, $0.5$, and $0.75$. Otherwise, default hyperparameters were used.
+
+Our simulations featured 1000 replications of the full data generation and random penalty weight search process for each simulation setting and number of candidate penalty weight sets per random search. We used 40 draws of candidate penalty weight sets and a correctly specified estimator with one coefficient for each input variable as default settings. Penalty weight candidates were all sampled from $\text{LogUnif}(-3,1)$. Three-fold cross validation was used for the random penalty weight search. In each random search, we simultaneously maximized all score function variations.
+
+### Simulation Results
+
+Our novel penalized regression methods were evaluated across several key dimensions: behavior of unfairness penalty weights by fairness score weights, understanding penalty weights across various evaluation measures, effect of changes in multi-group unfairness synthesis function, and the tradeoff between fairness and accuracy. First, we characterized the behavior of unfairness penalty weights under the averaged score functions. The random search yielded different unfairness penalty weights for the three groups across the user-specified fairness score weights (@fig-1). Unfairness penalty weights increased, on average, as the fairness score weight $\alpha$ increased. Unfairness penalty weights also varied across groups and simulation settings. 
+
+```{python}
+#| echo: false
+penres_list = []
+for i in range(10):
+  file_path = f'tables/penalty_res_{i}.csv'
+  if os.path.exists(file_path):
+      penres_list += [pd.read_csv(file_path)]
+resultstab = pd.concat(penres_list)
+
+## displayprefs
+docoptim = 'word'
+if docoptim == 'word':
+  threewidth = 4
+  threeheight = threewidth * 1.2
+  twowidth = 5
+  twoheight = twowidth
+else:
+  threewidth = 3
+  threeheight = threewidth * 1.3
+  twowidth = 4
+  twoheight = twowidth * 1.1
+unfairdims = [-.01, .16]
+```
+
+```{python}
+#| echo: false
+
+resultstab = resultstab.drop_duplicates()
+resultstab_al0 = pd.read_csv('tables/penalty_res_al0.csv')
+resultstab = pd.concat([resultstab, resultstab_al0]).sort_values(by = ['alpha', 'k_set', 'misspec']).reset_index(drop = True)
+fairnesses = ['mean_unfairness','mean_unfairness_unwt','max_unfairness','A_unfairness','B_unfairness','C_unfairness']
+resultstab[fairnesses] = -resultstab[fairnesses]
+resultstab1 = resultstab[resultstab['misspec']==0]
+# calculate population weighted averages
+# summarize across misspecification
+keepcols = ['alpha','k_set','l1','l2','l3','accuracy','mean_unfairness','mean_unfairness_unwt','max_unfairness','A_unfairness','B_unfairness','C_unfairness']
+resultstab1 = resultstab1.fillna(0)[(resultstab1['n_iter'] == 40) | (resultstab1['n_iter'].isnull())]
+sumtab = resultstab1[keepcols].groupby(['alpha','k_set']).mean().reset_index()
+desc = ['Medium Groups', 'One Small Group', 'All Small Groups']
+sumtabq1 = resultstab1[keepcols].groupby(['alpha','k_set']).quantile(.25).reset_index()
+sumtabq2 = resultstab1[keepcols].groupby(['alpha','k_set']).quantile(.5).reset_index()
+sumtabq3 = resultstab1[keepcols].groupby(['alpha','k_set']).quantile(.75).reset_index()
+
+tab2 = sumtab[['alpha','k_set','l1','l2','l3']]
+tab2['alpha'] = ['Fairness Weight: ' + str(a) for a in tab2['alpha']]
+tab2['k_set'] = ['Sim Pop ' + str(a + 1) for a in tab2['k_set']]
+```
+
+
+
+The different unfairness penalty weights yielded different fairness and accuracy measures (@fig-2). In general, for each simulation setting, there was some range of user-specified fairness score weights over which there was a sharp decrease in unfairness with only modest decreases in accuracy. For simulation setting 1, our penalized method with a fairness score weight of $0.5$ had an accuracy decrease of `{python} f'{(float(sumtabq2[(sumtabq2['k_set'] == 0) & (sumtabq2['alpha'] == 0)]['accuracy']) - float(sumtabq2[(sumtabq2['k_set'] == 0) & (sumtabq2['alpha'] == 0.5)]['accuracy']))*100:.0f}'` percentage points and a mean population-weighted unfairness decrease of `{python} f'{(float(sumtabq2[(sumtabq2['k_set'] == 0) & (sumtabq2['alpha'] == 0)]['mean_unfairness']) - float(sumtabq2[(sumtabq2['k_set'] == 0) & (sumtabq2['alpha'] == 0.5)]['mean_unfairness']))*100:.0f}'` percentage points relative to the baseline estimator. Our penalized method incurred steeper accuracy losses for simulation setting 3, where a fairness score weight of 0.5 had an accuracy decrease of `{python} f'{(float(sumtabq2[(sumtabq2['k_set'] == 2) & (sumtabq2['alpha'] == 0)]['accuracy']) - float(sumtabq2[(sumtabq2['k_set'] == 2) & (sumtabq2['alpha'] == 0.5)]['accuracy']))*100:.0f}'` percentage points and a mean population-weighted unfairness decrease of `{python} f'{(float(sumtabq2[(sumtabq2['k_set'] == 2) & (sumtabq2['alpha'] == 0)]['mean_unfairness']) - float(sumtabq2[(sumtabq2['k_set'] == 2) & (sumtabq2['alpha'] == 0.5)]['mean_unfairness']))*100:.0f}'` percentage points relative to the baseline estimator.
+
+Next, we examine the impact of the choice of multi-group synthesis function on accuracy and the fairness measures. All three methods for synthesis of unfairness measures across groups in the score function --- population-weighted mean, group-weighted mean, and maximum --- yielded similar results with overlapping interquartile ranges, especially for accuracy and population-weighted mean fairness (@fig-3). The methods only diverged in maximum unfairness, where the population-weighted mean method underperformed and the maximum method overperformed. 
+
+We compare the fairness and accuracy results of our penalized method to the fair reductions constrained regression method (@fig-4). This figure also shows the fairness-accuracy frontier, the set of results for which there is no better performance in both fairness and accuracy [@liang_algorithmic_2023]. The fairness-accuracy frontier for our penalized method was beyond that of the comparison fair reduction methods; the comparison method did not yield estimators that outperformed our method's estimators in both mean fairness and accuracy. In simulation settings 1 and 2, the penalized methods were clustered around the fairness-accuracy frontier, while the comparison method had more variance. For simulation setting 3, which featured smaller groups, there was more variance across simulations for both methods, with more replications far from the fairness-accuracy frontier. Results for simulation performance studying variation in the number of candidate penalty weight sets and under estimator misspecification are available in Web Figures 1-2. Accuracy and unfairness had less variation as the number of candidate penalty weight sets increased and misspecified estimators generally had fairness-accuracy frontiers shifted downward.
+
+```{python}
+#| echo: false
+
+comps_list = []
+for i in range(11):
+  file_path = f'tables/comp_res_{i+1}.csv'
+  if os.path.exists(file_path):
+      comps_list += [pd.read_csv(file_path, index_col = 0)]
+comps = pd.concat(comps_list)
+fairnesses.remove('mean_unfairness_unwt')
+comps[fairnesses] = -comps[fairnesses]
+```
+
+```{python}
+#| echo: false
+
+resultstab3 = resultstab.copy()
+
+temp = resultstab3[resultstab3['misspec']==0]
+temp['method'] = 'Novel Penalized'
+comps['method'] = 'Fair Reductions'
+temp = temp[comps.columns.tolist()]
+revtab = pd.concat((temp, comps))
+revtab['k_set'] = [f'Sim. Set. {k+1}' for k in revtab['k_set']]
+revtab.rename(columns={'k_set': 'Simulation Setting', 'method': 'Method'}, inplace=True)
+```
+
+
+## CHRONIC KIDNEY DISEASE APPLICATION {#sec-application}
+
+### Data
+
+We applied our methods in the American Family Cohort dataset derived from the American Board of Family Medicine PRIME Registry [@phillips_prime_2017; @stanford_center_for_population_health_sciences_afc_2024]. These primary care practice electronic health record data from across the United States contain billing information (including diagnosis and procedure codes), drug information, and physiological patient measurements from laboratory tests and direct clinical observation. Using input variables measured in 2017-2018, we predicted the occurrence of ESRD in 2019. This outcome was defined through either an ESRD diagnosis code or serum creatinine corresponding to eGFR under 15. eGFR was calculated with the CKD-EPI 2021 equation, which does not adjust for race, to more accurately reflect the true physiological state of patients [@inker_new_2021].
+
+Predictors were selected based on prior literature [@segal_machine_2020; @inoguchi_simplified_2022; @su_machine_2022; @wang_towards_2022]. We had several physiologic predictors. The means of diastolic and systolic blood pressure as well as the maximum and mean values for hemoglobin A1C and billirubin were included as predictors, as was the minimum eGFR value. Missingness was accounted for through the inclusion of indicators of missingness as predictors. Indicators for hypertension emergencies, type 2 diabetes, glomerulonephritis, proteinuria, and pyelonephritis, constructed using diagnosis codes, were included as predictors as well. Diagnosis codes used for these measures are included in Web Table 1. Finally, binary documented sex, year of birth, race, and ethnicity were available in the American Family Cohort dataset. We included documented sex and age as predictors. Race and ethnicity were used to define the groups of interest in the construction of fairness penalties and metrics, but we intentionally did not include these variables as predictors. We studied fairness for three race and ethnicity groups: Black, Hispanic non-white, and Asian, with some patients identified as both Black and Hispanic non-white as well as Asian and Hispanic non-white. White patients were treated as the reference group. Two groups who face health disparities in CKD had small sample sizes (American Indian and Alaska Native as well as Native Hawaiian and Pacific Islander) in our dataset and were not included as groups for fairness optimization. 
+
+```{python}
+#| echo: false
+tab1 = pd.read_csv('tables/tab1_baseline.csv', index_col = 0)
+tab1 = tab1[1:]
+tab1.columns = ['nan', 'Missing', 'Overall', 'No ESRD', 'ESRD']
+
+# reformat table for cleanness
+tab1 = tab1[tab1.iloc[:,0] != 0]
+tab1 = tab1.drop(tab1.columns[0], axis=1)
+for badrow in ['max_systolic, mean (SD)','max_diastolic, mean (SD)']:
+  if badrow in tab1.index:
+    tab1 = tab1.drop(badrow)
+tab1 = tab1.iloc[[0,8,1,2,3,4,5,6,15,16,17,18,7,9,10,11,12,13]]
+tab1 = tab1.fillna(0)
+
+tab1.index = ['n','Minimum eGFR, mean (SD)','Mean Diastolic BP, mean (SD)',
+       'Mean Systolic BP, mean (SD)', 'Max HbA1c, mean (SD)',
+       'Mean HbA1c, mean (SD)', 'Max Bilirubin, mean (SD)', 'Mean Bilirubin, mean (SD)', 'Diabetes (Type 2), n (\%)', 'Kidney Stone, n (\%)',
+       'Proteinuria, n (\%)', 'Pyelonephritis, n (\%)', 
+       'Age, mean (SD)', 'Female, n (\%)', 
+       'White, n (\%)', 'Black, n (\%)', 'Asian, n (\%)', 'Hispanic Non-white, n (\%)']
+
+tab1['section'] = [''] + ['Measurements'] * 7 + ['Diagnoses'] * 4 + ['Demographics'] * 6
+tab1 = tab1.drop(['Max HbA1c, mean (SD)','Max Bilirubin, mean (SD)'])
+tab1 = tab1.reset_index()
+```
+
+```{python}
+#| echo: false
+
+tab1 = tab1.drop('section', axis = 1)
+tab1.loc[0.5] = 'Measurements','','','',''
+tab1.loc[5.5] = 'Diagnoses','','','',''
+tab1.loc[9.5] = 'Demographics','','','',''
+tab1 = tab1.sort_index()
+tab1 = tab1.rename(columns={'index': ''})
+```
+
+We restricted our sample to patients with diastolic and systolic blood pressure measurements in 2017-2018 and to practices with at least one ESRD patient in 2017-2019 for data quality. To target high-risk susceptible patients, the sample was restricted to patients at least 35 years old with at least two chronic kidney disease diagnosis codes, no documented ESRD prior to 2019, and a maximum systolic blood pressure of at least 140 mmHg, indicating stage 2 hypertension, in 2017-2018 [@hsu_elevated_2005; @cusick_balancing_2025]. Finally, we required recorded values of either race or ethnicity. The resulting sample had `{python} tab1['Overall'][0]` patients, `{python} tab1['ESRD'][0]` of whom developed ESRD in 2019. Detailed sample characteristics are described in Web Table 2. 
+
+### Implementation
+
+We used a decision threshold of 0.15 for estimated ESRD probability, informed by evidence from prior settings that the benefits of increasing the intensity of CKD treatment outweigh the costs and thus that false negatives are more harmful than false positives, but we recognize that other thresholds could also be valid [@tisdale_cost-effectiveness_2022]. Penalty weight candidates were sampled from the distribution $\text{LogUnif}(-4,-1)$. We used three-fold cross validation to simultaneously identify the penalty weight sets that maximized each score function variation described in @sec-simmethods. Comparison estimators were the same as in our simulation with the same algorithms and hyperparameters described in @sec-sim. 
+
+### Results
+
+```{python}
+#| echo: false
+logbase = pd.read_csv('tables/logistic_baseline.csv', index_col = 0)
+logbase = logbase.rename({'nw_hispanic': 'Hispanic non-white', 'black': 'Black', 'asian': 'Asian', 'white': 'White', 'total': 'Total'})
+logbase = logbase.drop(['pred_prob','pred_prev'], axis=1)
+```
+
+The baseline estimator had an overall accuracy of `{python} str(round(logbase['acc'][4], 2))`, with a sensitivity of `{python} str(round(logbase['sensi'][4], 2))` and a specificity of `{python} str(round(logbase['speci'][4], 2))` (@tbl-baselogreg). However, its accuracy and sensitivity were both lower for Black and Asian patients than for the overall sample, while the opposite was true for white patients. Accuracy was lower for Hispanic non-white patients compared to the overall sample, but not sensitivity, although sensitivity was lower for Hispanic non-white patients than for white patients. Hispanic non-white patients also had the highest prevalence of ESRD among the groups we considered.
+
+Under the 30 different score function formulations, 6 distinct sets of penalty weights that maximized the score functions and their corresponding penalized regression estimators were identified (@tbl-esrdresmain). In most cases, more than one combination of synthesis method and fairness score weight yielded identical results. Overall, the penalized estimators had 0-4 percentage point decreases in accuracy with 1-7 percentage point decreases in unfairness. The penalized regression estimator with group-weighting and fairness score weight 0.1 had the same performance as the population-weighted estimator with fairness score weight 0.1 or 0.2. These three estimators had less than a percentage point difference in accuracy, 1 percentage point higher sensitivity, and 7 percentage points lower mean unfairness (a 78\% reduction) compared to the baseline, including reducing unfairness for Black and Hispanic non-white patients to 0. Thus, these estimators provided no appreciable loss in overall fit with only improvements in fairness. However, across most estimators, substantial unfairness remained for Asian patients, the smallest group we considered in our data sample, comprising only 2\% of patients. The fair reductions constrained regression comparison estimators either had extremely low sensitivity or extremely low accuracy even when they improved unfairness, which is inappropriate for this application [@tisdale_cost-effectiveness_2022].
+
+```{python}
+#| echo: false
+
+displaycols = ['accuracy','sensi','mean_unfairness','mean_unfairness_unwt', 'max_unfairness', 'A_unfairness', 'B_unfairness', 'C_unfairness']
+# get possible acc-fair values
+esrd_res = pd.read_csv('tables/esrd_bigtab.csv', index_col = 0)
+faircols = ['mean_unfairness','mean_unfairness_unwt', 'max_unfairness', 'A_unfairness', 'B_unfairness', 'C_unfairness']
+esrd_res[faircols] = -esrd_res[faircols]
+base_res = esrd_res[esrd_res['alpha'] == 0]
+esrd_res = esrd_res[esrd_res['alpha'] > 0]
+esrd_accfair = esrd_res[displaycols].drop_duplicates()
+name_fancifier = {'weighted': 'Pop', 'unweighted': 'Group', 'max': 'Max'}
+esrd_res = esrd_res.sort_values(by=['grp_synth','alpha'])
+names = []
+for i, row in esrd_accfair.iterrows():
+  temp = esrd_res[esrd_res['accuracy'] == row['accuracy']].reset_index()
+  synthers = temp['grp_synth'].drop_duplicates().values.tolist()
+  subnames = []
+  for j, synth in enumerate(synthers):
+    alphas = temp[temp['grp_synth'] == synth].reset_index()['alpha'].values.tolist()
+    if len(alphas) > 5:
+      starttag = '$\\begin{aligned}' #if j == 0 else ''
+      endtag = '\\end{aligned}$' #if j == len(synthers) - 1 else ''
+      subnames += [f'{starttag} \\text{{{name_fancifier[synth]} }} \\alpha=\\,&{alphas[:4]} \\\\ &{alphas[4:]} {endtag}'.replace('[', '').replace(']', '')]
+    else:
+      subnames += [f'{name_fancifier[synth]} $\\alpha={alphas}$'.replace('[', '').replace(']', '')]
+  addon = ('\\\\').join(subnames) if len(temp) < 10 else ('\\\\[-10pt]').join(subnames)
+  names += [addon]
+# get comparison
+comp_res = pd.read_csv('tables/esrd_comp.csv', index_col = 0)
+comp_res['mean_unfairness_unwt'] = (comp_res['A_unfairness'] + comp_res['B_unfairness'] + comp_res['C_unfairness']) / 3
+comp_res[faircols] = -comp_res[faircols]
+
+tabcols = ['accuracy','sensi','mean_unfairness', 'A_unfairness', 'B_unfairness', 'C_unfairness']
+displaytab = pd.concat((base_res[tabcols], esrd_accfair[tabcols], comp_res[tabcols]))
+faircols = ['mean_unfairness', 'A_unfairness', 'B_unfairness', 'C_unfairness']
+displaytab[faircols] = abs(displaytab[faircols])
+displaytab['Method'] = ['Baseline'] + [f'{i}' for i in names] + ['ExpGrad, Ep = 0.1', 'ExpGrad, Ep = 0.01', 'Grid, CW = 0.25', 'Grid, CW = 0.5', 'Grid, CW = 0.75']
+displaytab = displaytab[['Method'] + tabcols]
+
+```
+
+## DISCUSSION {#sec-discussion}
+
+We proposed a new fair penalized regression method that jointly considers multiple groups with a flexible and efficient implementation. Our method robustly achieved a fairness-accuracy frontier beyond that of comparison fair regression methods across numerous simulation settings. We applied the method to primary care data to develop a classifier for ESRD that had a preferable balance of accuracy, sensitivity, and true positive rate fairness across racial and ethnic groups compared to existing methods. While the overall best fair penalized regression method will depend on underlying (typically unknown) data structure and application, our framework is well suited to a priori specified benchmarks for selecting among the synthesis mechanisms and fairness weights. It can seamlessly be incorporated into ensembles, for example.
+
+Although this framework is general, we do not empirically demonstrate how it performs for other fairness definitions, estimator types, or outcomes. Future areas of work include adapting our framework for such cases. We also found that for small groups of interest, our proposed method may have high variance and could be outperformed by alternative fair regression methods. In our application, we highlight that there is no universal standard for how race is measured across clinics in the American Family Cohort. We also lacked the sample size to study fairness for some racial groups, including American Indian and Alaska Native and Native Hawaiian and Pacific Islander patients. Furthermore, fair regression is just one aspect of ethical machine learning and should be considered alongside the full machine learning pipeline in health care [@chen_ethical_2021]. 
+
+We made several novel contributions to the literature beyond the inherent novelty of a penalized regression that is fair with respect to multiple groups. In adapting the reductions method for penalized regression, we detailed efficient implementation practices for fair penalized regressions. The automatic penalty selection process we developed includes a novel score function that rescales and synthesizes accuracy and fairness metrics. The use of a random search for penalty weights is novel in this literature, and we characterized our implementation details and the random search performance under different hyperparameters.  
+
+### Acknowledgements {.unnumbered}
+
+Data for this project were accessed using the Stanford Center for Population Health Sciences Data Core. The PHS Data Core is supported by a National Institutes of Health National Center for Advancing Translational Science Clinical and Translational Science Award (UL1TR003142) and from Internal Stanford funding. The content is solely the responsibility of the authors and does not necessarily represent the official views of the NIH. We wish to acknowledge and thank the ABFM PRIME Registry participating clinicians and the American Board of Family Medicine, without whom the American Family Cohort would not be possible. We also thank members of the Health Policy and Data Science Lab for their feedback on this research with special thanks to Malcolm Barrett for expert code review. 
+
+This project was supported by NIH grant R01LM013989, NSF grant DGE-2146755, and AHRQ grant 5T32HS026128-07. The authors have no conflicts of interest to disclose. The project falls under a Stanford IRB, which approved human subjects involvement and waived consent. 
+
+### Data availability statement {.unnumbered}
+
+The data underlying this article cannot be shared publicly due to data use agreement restrictions. 
+
+### References {.unnumbered}
+::: {#refs}
+:::
+
+### Supplementary Material {.unnumbered}
+
+Web Appendices, Tables, and Figures, and code referenced in Sections 3, 3.1, 4, 4.2, and 5.1 are available with this paper. Code is available in a public GitHub repository at the link https://github.com/StanfordHPDS/penalized_multiple_groups. 
+
+
+
+{{< pagebreak >}}
+
+
+```{python}
+#| echo: false
+#| label: fig-1
+#| fig-cap: \textbf{Penalty Weights for Each Group by Fairness Score Weight.} Confidence intervals represent the empirical 25th and 75th percentiles of replications.
+#| fig-subcap:
+#|   - 'Simulation Setting 1'
+#|   - 'Simulation Setting 2'
+#|   - 'Simulation Setting 3'
+#| layout: [[30,-5,30,-5,30]]
+colors = ['grey','orange','brown']
+grouplabs = ['A','B','C']
+for k in range(3): 
+  fig = plt.figure(figsize=(threewidth, threeheight))
+  for i, outcome in enumerate(['l1','l2','l3']):
+    temp = sumtabq2[(sumtabq2['k_set'] == k) & (sumtabq2['alpha'] > 0)]
+    plt.errorbar(temp['alpha'], temp[outcome], yerr = [temp[outcome] - sumtabq1[(sumtabq2['k_set'] == k) & (sumtabq2['alpha'] > 0)][outcome], sumtabq3[(sumtabq2['k_set'] == k) & (sumtabq2['alpha'] > 0)][outcome] - temp[outcome]], alpha=0.4, label = f"Group {grouplabs[i]}", color = colors[i], fmt='.', capsize=5)
+  plt.ylim(-.2, 3)
+  plt.xlabel(r'$\alpha$')
+  plt.ylabel('Penalty Weight')
+  if k == 0:
+    leg = plt.legend(loc='upper left')
+    for lh in leg.legend_handles: 
+      lh.set_alpha(1)
+  plt.show()
+```
+
+
+```{python}
+#| echo: false
+#| label: fig-2
+#| fig-cap: \textbf{Fair Regression Estimator Accuracy and Unfairness for Different Fairness Score Weights by Simulation Setting.} Confidence intervals represent the empirical 25th and 75th percentiles of replications.
+#| fig-subcap:
+#|   - Accuracy
+#|   - Population-Weighted Mean Unfairness
+#|   - Group-Weighted Mean Unfairness
+#|   - Max Group Unfairness
+#| layout: [[47,-6,47]]
+
+colors = ['blue','green','darkorange']
+outlabs = ['Accuracy','Population-Weighted Mean Unfairness', 'Group-Weighted Mean Unfairness', 'Max Group Unfairness']
+for i, outcome in enumerate(['accuracy','mean_unfairness','mean_unfairness_unwt','max_unfairness']):
+  fig = plt.figure(figsize=(twowidth, twoheight))
+  for k in range(3):
+    plt.errorbar(sumtabq2[sumtabq2['k_set'] == k]['alpha'], sumtabq2[sumtabq2['k_set'] == k][outcome], yerr = [sumtabq2[sumtabq2['k_set'] == k][outcome] - sumtabq1[sumtabq1['k_set'] == k][outcome], sumtabq3[sumtabq3['k_set'] == k][outcome] - sumtabq2[sumtabq2['k_set'] == k][outcome]], alpha=0.4, label = f"Simulation Setting {k+1}", color = colors[k], fmt='.', capsize=5)
+  if outcome == 'accuracy':
+    plt.ylim(0, 1)
+    leg = plt.legend(loc='lower left')
+    for lh in leg.legend_handles: 
+      lh.set_alpha(1)
+    plt.axhline(y=1, color='grey', linestyle='dashed')
+    plt.ylim(0,1.05)  
+  else: 
+    plt.axhline(y=0, color='grey', linestyle='dashed')
+    plt.ylim(unfairdims[0],unfairdims[1])  
+  plt.xlabel(r'$\alpha$')
+  plt.ylabel(outlabs[i])
+  plt.savefig(f'figures/simres{i}.png', dpi=300)
+  plt.show()
+```
+
+```{python}
+#| echo: false
+#| label: fig-3
+#| fig-cap: \textbf{Fair Regression Estimator Accuracy and Unfairness for Different Fairness Score Weights by Multi-Group Unfairness Synthesis Function.} The subfigures correspond to performance measures for fitted estimators, while colors correspond to how the fairness components of the score functions were calculated. Confidence intervals represent the empirical 25th and 75th percentiles of replications.
+#| fig-subcap:
+#|   - Accuracy
+#|   - Population-Weighted Mean Unfairness
+#|   - Group-Weighted Mean Unfairness
+#|   - Max Group Unfairness
+#| layout: [[47,-6,47]]
+
+keepcols = ['alpha','group_synth','l1','l2','l3','accuracy','mean_unfairness','mean_unfairness_unwt','max_unfairness','A_unfairness','B_unfairness','C_unfairness']
+sumtab = resultstab1[keepcols].groupby(['alpha','group_synth']).mean().reset_index()
+desc = ['weighted', 'unweighted', 'Max']
+descnames = ['Population-Weighted', 'Group-Weighted', 'Max']
+sumtabq1 = resultstab1[keepcols].groupby(['alpha','group_synth']).quantile(.25).reset_index()
+sumtabq2 = resultstab1[keepcols].groupby(['alpha','group_synth']).quantile(.5).reset_index()
+sumtabq3 = resultstab1[keepcols].groupby(['alpha','group_synth']).quantile(.75).reset_index()
+
+colors = ['blue','darkorange','magenta']
+for j, outcome in enumerate(['accuracy','mean_unfairness','mean_unfairness_unwt','max_unfairness']):
+  fig = plt.figure(figsize=(twowidth, twoheight))
+  for i, syn in enumerate(desc):
+    plt.errorbar(sumtabq2[sumtabq2['group_synth'] == syn]['alpha'], sumtabq2[sumtabq2['group_synth'] == syn][outcome], yerr = [sumtabq2[sumtabq2['group_synth'] == syn][outcome] - sumtabq1[sumtabq1['group_synth'] == syn][outcome], sumtabq3[sumtabq3['group_synth'] == syn][outcome] - sumtabq2[sumtabq2['group_synth'] == syn][outcome]], alpha=0.4, label = descnames[i], color = colors[i], fmt='.', capsize=5)
+  if outcome == 'accuracy':
+    leg = plt.legend(loc='lower left')
+    for lh in leg.legend_handles: 
+      lh.set_alpha(1)
+    plt.axhline(y=1, color='grey', linestyle='dashed')
+    plt.ylim(0,1.05)  
+  else: 
+    plt.axhline(y=0, color='grey', linestyle='dashed')
+    plt.ylim(unfairdims[0],unfairdims[1])
+  plt.xlabel(r'$\alpha$')
+  plt.ylabel(outlabs[j])
+  # plt.savefig('figures/simres1.png', dpi=300)
+  plt.show()
+```
+
+```{python}
+#| echo: false
+#| label: fig-4
+#| fig-cap: \textbf{Accuracy and Mean Fairness for Proposed and Comparison Fair Reductions Methods by Simulation Setting.} Each plotted point corresponds to the result of a single simulation experiment under one of the score function variations or enumerated fair reductions hyperparameters.
+#| fig-subcap:
+#|   - 'Simulation Setting 1'
+#|   - 'Simulation Setting 2'
+#|   - 'Simulation Setting 3'
+#| layout: [[30,-5,30,-5,30]]
+
+for pop in range(3):
+  fig = plt.figure(figsize=(threewidth, threeheight))
+  temp = revtab[revtab['Simulation Setting'] == f'Sim. Set. {pop+1}']
+  sns.scatterplot(data=temp, x='mean_unfairness', y='accuracy', hue='Method', alpha=0.03, legend=(pop == 0))
+  plt.xlabel('Mean Unfairness')
+  plt.ylabel('Accuracy')
+  plt.ylim(0.4, .8)
+  plt.xlim(unfairdims[0],.16)
+  if pop == 0:
+    leg = plt.legend(loc='lower right')
+    for lh in leg.legend_handles: 
+      lh.set_alpha(1)
+  plt.show()
+```
+
+
+
+{{< pagebreak >}}
+
+
+
+```{python}
+#| echo: false
+#| label: tbl-baselogreg
+#| tbl-cap: \textbf{Unpenalized Regression Performance by Race and Ethnicity Group.}
+#| output: asis
+
+logbase.index.name = None
+logbase = logbase.set_axis(["n","Prevalence", "Sensitivity", "Specificity", "Accuracy"], axis=1)
+
+int_latex = logbase.to_latex(index = True, multicolumn_format='|c|', float_format="%.2f")
+# change formatting to align on decimals
+idx = int_latex.index('begin{tabular') + 14
+int2_latex = int_latex[:idx] + "{@{} l *{5}{S[table-format=3.2]} @{}}" + int_latex[(idx+8):]
+# add braces around headers
+idx = int2_latex.index('n &')
+for h in logbase.columns:
+  int2_latex = int2_latex[:idx] + "{" + f'{h}' + "}" + int2_latex[(idx+len(h)):]
+  idx += len(h) + 5
+print(int2_latex)
+```
+
+```{python}
+#| echo: false
+#| label: tbl-esrdresmain
+#| tbl-cap: \textbf{Performance for Baseline Unpenalized Regression, Novel Penalized Regressions, and Fair Reductions Methods.} 
+#| output: asis
+
+tuples = list(zip(*[["", "", "", "Unfairness", "Unfairness", "Unfairness", "Unfairness"],
+    ["Method", "Accuracy", "Sensitivity", 'Mean', 'Black','Asian','HNW' ],]))
+stacklabs = pd.MultiIndex.from_tuples(tuples)
+displaytab = displaytab.set_axis(stacklabs, axis=1)
+
+int_latex = displaytab.to_latex(index = False, position = 't', float_format="%.2f")
+# put line under unfairness section
+idx = int_latex.index('Method')
+int2_latex = int_latex[:idx] + '\cline{4-7}' + int_latex[idx:]
+# center unfairness section
+idx = int2_latex.index('r}{Unfairness')
+int3_latex = int2_latex[:idx] + 'c}' + int2_latex[(idx+2):]
+
+# change formatting to align on decimals
+idx = int3_latex.index('begin{tabular') + 14
+int4_latex = int3_latex[:idx] + "{@{} l *{6}{S[table-format=3.2]} @{}}" + int3_latex[(idx+9):]
+int4_latex = int4_latex[:(idx-15)] + "\n\\sisetup{detect-weight=true,detect-inline-weight=math, text-series-to-math = true, propagate-math-font = true}\n\\newrobustcmd\\B{\\DeclareFontSeriesDefault[rm]{bf}{b}\\bfseries}\n\\addtolength{\\jot}{-1.5em}\n" + int4_latex[(idx-15):]
+
+# add braces around headers
+idx = int4_latex.index('Method')
+for h in displaytab.columns:
+  int4_latex = int4_latex[:idx] + "{" + f'{h[1]}' + "}" + int4_latex[(idx+len(h[1])):]
+  idx += len(h[1]) + 5
+
+# allow for multi-line cells in methods col
+idx = int4_latex.find('\\\\', int4_latex.index('midrule') + 7) + 3
+for i in range(6):
+  idx2 = idx + len(names[i])
+  int4_latex = int4_latex[:idx] + "\\makecell[l]{" + int4_latex[idx:idx2] + "}" + int4_latex[idx2:]
+  idx = int4_latex.find('\\\\', idx2) + 3
+
+# add table noteafter
+idx = int4_latex.index('end{table') -1
+fin_latex = int4_latex[:idx] + "\\vspace{0.2cm} " + "\n\n \\begin{flushleft} \small{" + "\\" + "textbf{Note:} Novel fair penalized regressions were defined based on the multi-group unfairness synthesis mechanism: population-weighted average (Pop), group-weighted average (Group), and maximum (Max) as well as fairness score weight ($\\alpha$). Fair reductions comparisons were exponentiated gradient (ExpGrad) or grid search (Grid) methods, varying constraint flexibility (Ep) or constraint weight (CW), respectively. `HNW' is Hispanic non-white.} \\end{flushleft}" + int4_latex[(idx):]
+print(fin_latex)
+```
+
+
