@@ -1,10 +1,8 @@
 # Penalized Fair Regression for Multiple Groups in Chronic Kidney Disease
 
-This repository contains the code for penalized fair regression with respect to multiple groups and for implementing it in simulated data and also for end stage renal disease prediction among chronic kidney disease patients in the [American Family Cohort](https://www.jabfm.org/content/30/4/559). 
+This repository contains the code for the paper "Penalized Fair Regression for Multiple Groups in Chronic Kidney Disease" by Carter H. Nakamoto, Lucia Lushi Chen, Agata Foryciarz, and Sherri Rose, [https://arxiv.org/abs/2512.17340](https://arxiv.org/abs/2512.17340).
 
-The corresponding publication is available on [arxiv](https://arxiv.org/abs/2512.17340).
-
-Data citation and location: Stanford Center for Population Health Sciences (2024). AFC OMOP RIF. Redivis. DOI:10.71778/V2DW-7A53. 
+Data citation for [American Family Cohort](https://www.jabfm.org/content/30/4/559): Stanford Center for Population Health Sciences (2024). AFC OMOP RIF. Redivis. DOI:10.71778/V2DW-7A53. 
 
 ## Setting up this repository
 
